@@ -121,10 +121,10 @@ function extractXml(buffer) {
       });
     }
 
-    // Count level-0 items per numId
+    // Count level-0 items per numId — exclude numId=0 (Word's "remove numbering" value)
     const counts = {};
     for (const p of rawParas) {
-      if (p.numId && p.ilvl === 0) counts[p.numId] = (counts[p.numId] || 0) + 1;
+      if (p.numId && p.numId !== '0' && p.ilvl === 0) counts[p.numId] = (counts[p.numId] || 0) + 1;
     }
 
     if (!Object.keys(counts).length) return { valid: false };
