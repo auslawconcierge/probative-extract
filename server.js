@@ -12,7 +12,6 @@ const API_KEY = process.env.EXTRACT_API_KEY;
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.post('/extract', (req, res) => {
-  // Auth
   const auth = req.headers.authorization || '';
   if (API_KEY && auth !== 'Bearer ' + API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -34,35 +33,22 @@ app.post('/extract', (req, res) => {
       const pdfPath = join(workDir, 'input.pdf');
       writeFileSync(pdfPath, buf);
       try {
-        // Digital PDF — fast text extraction
-        rawText = execSync(`pdftotext -layout "${pdfPath}" -`, {
-          encoding: 'utf8',
-          timeout: 30000
-        });
+        rawText = execSync(`pdftotext -layout "${pdfPath}" -`, { encoding: 'utf8', timeout: 30000 });
       } catch (e) {
-        // Scanned PDF — OCR fallback
-        console.log('pdftotext failed, trying OCR:', e.message);
-        rawText = execSync(`tesseract "${pdfPath}" stdout`, {
-          encoding: 'utf8',
-          timeout: 120000
-        });
+        rawText = execSync(`tesseract "${pdfPath}" stdout`, { encoding: 'utf8', timeout: 120000 });
       }
     } else {
-      // docx (or doc) — LibreOffice handles every numbering format
       const docxPath = join(workDir, 'input.docx');
       writeFileSync(docxPath, buf);
       execSync(
         `soffice --headless --convert-to txt:Text --outdir "${workDir}" "${docxPath}"`,
-        {
-          encoding: 'utf8',
-          timeout: 60000,
-          env: { ...process.env, HOME: '/tmp' }
-        }
+        { encoding: 'utf8', timeout: 60000, env: { ...process.env, HOME: '/tmp' } }
       );
       rawText = readFileSync(join(workDir, 'input.txt'), 'utf8');
     }
 
     const result = parseNumberedParagraphs(rawText);
+    console.log(`Extracted ${result.paragraphs.length} paragraphs`);
 
     return res.json({
       text: result.formatted,
@@ -85,52 +71,39 @@ function parseNumberedParagraphs(text) {
   const paragraphs = [];
   let current = null;
 
-  // Matches top-level paragraph numbers: "1. " "18. " "100. "
-  const topLevelRe = /^(\d+)\.\s+(\S.*)/;
-
-  // Matches decimal sub-paragraphs: "21.1 " "21.1.1 "
-  const decimalSubRe = /^(\d+\.\d[\d.]*)\s+(\S.*)/;
-
-  // Matches lettered sub-paragraphs: "(a) " "  (a) "
-  const letteredSubRe = /^\s*\(([a-z])\)\s+(\S.*)/;
-
-  // Heading detector — all caps, or bold-style short line with no sentence punctuation
-  const isHeading = (line) => {
-    const t = line.trim();
-    if (!t || t.length > 120) return false;
-    // All-uppercase words (section headings like "Propertybase" headings won't match but
-    // "SUPREME COURT OF QUEENSLAND" will)
-    if (/^[A-Z][A-Z\s\-':,\.]{4,}$/.test(t)) return true;
-    return false;
-  };
+  // All regexes applied to TRIMMED lines
+  const topLevelRe = /^(\d+)\.\s+(\S.*)/;           // "1. Text"
+  const decimalSubRe = /^(\d+\.\d[\d.]*)\s+(\S.*)/; // "21.1 Text"
+  const letteredSubRe = /^\(([a-z])\)\s+(\S.*)/;    // "(a) Text"
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd();
-    if (!line.trim()) continue;
+    const raw = lines[i];
+    const line = raw.trim();
+    if (!line) continue;
 
     // Lettered sub-paragraph
     const subM = line.match(letteredSubRe);
     if (subM && current) {
-      // Collect continuation lines for this sub-para
       let subText = subM[2].trim();
+      // Collect continuation lines
       while (i + 1 < lines.length) {
-        const next = lines[i + 1].trimEnd();
-        // Continuation: indented and not a new numbered item
-        if (next.trim() && /^\s{4,}/.test(next) &&
-            !next.match(letteredSubRe) && !next.match(topLevelRe)) {
-          subText += ' ' + next.trim();
-          i++;
+        const next = lines[i + 1].trim();
+        if (next && !next.match(letteredSubRe) && !next.match(topLevelRe) && !next.match(decimalSubRe)) {
+          // Only continue if indented more than current
+          if (lines[i + 1].length > 0 && (lines[i + 1][0] === ' ' || lines[i + 1][0] === '\t')) {
+            subText += ' ' + next;
+            i++;
+          } else break;
         } else break;
       }
       current.subs.push({ label: subM[1], text: subText });
       continue;
     }
 
-    // Decimal sub-paragraph (e.g. 21.1)
+    // Decimal sub-paragraph e.g. 21.1
     const decM = line.match(decimalSubRe);
     if (decM && current) {
-      let subText = decM[2].trim();
-      current.subs.push({ label: decM[1], text: subText });
+      current.subs.push({ label: decM[1], text: decM[2].trim() });
       continue;
     }
 
@@ -138,31 +111,27 @@ function parseNumberedParagraphs(text) {
     const topM = line.match(topLevelRe);
     if (topM) {
       if (current) paragraphs.push(current);
-      // Collect multi-line paragraph text
       let paraText = topM[2].trim();
+      // Collect multi-line continuation
       while (i + 1 < lines.length) {
-        const next = lines[i + 1].trimEnd();
-        // Continuation line: not empty, not a new numbered item, not a heading
-        if (next.trim() &&
-            !next.match(topLevelRe) &&
-            !next.match(decimalSubRe) &&
-            !next.match(letteredSubRe) &&
-            !isHeading(next)) {
-          paraText += ' ' + next.trim();
-          i++;
-        } else break;
+        const nextRaw = lines[i + 1];
+        const next = nextRaw.trim();
+        if (!next) break;
+        if (next.match(topLevelRe)) break;
+        if (next.match(decimalSubRe)) break;
+        if (next.match(letteredSubRe)) break;
+        // Stop at all-caps headings
+        if (/^[A-Z][A-Z\s\-':,\.]{4,}$/.test(next)) break;
+        paraText += ' ' + next;
+        i++;
       }
       current = { num: parseInt(topM[1]), text: paraText, subs: [] };
       continue;
     }
-
-    // Not a numbered line — if we haven't started collecting yet, skip
-    // (covers court headers, party names, etc.)
   }
 
   if (current) paragraphs.push(current);
 
-  // Build formatted output matching existing analyse.js expectations
   const alpha = 'abcdefghijklmnopqrstuvwxyz';
   const formatted = paragraphs.map(p => {
     let out = 'PARAGRAPH [' + p.num + ']: ' + p.text;
