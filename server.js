@@ -180,15 +180,8 @@ function extractXml(buffer) {
         }
         const fullText = pendingPrefix ? pendingPrefix + ' ' + p.text : p.text;
         pendingPrefix = '';
-        const explicitNum = fullText.match(/^(\d+)[.)\s]/);
-        if (explicitNum) {
-          counter = parseInt(explicitNum[1]);
-          const stripped = fullText.replace(/^\d+[.)\s]+/, '').trim();
-          result.push({ num: counter, text: stripped, subs: [] });
-        } else {
-          counter++;
-          result.push({ num: counter, text: fullText, subs: [] });
-        }
+        counter++;
+        result.push({ num: counter, text: fullText, subs: [] });
       } else if (result.length > 0 && p.numId && p.ilvl > 0) {
         result[result.length - 1].subs.push(p.text);
       } else if (result.length > 0 && p.numId && p.ilvl === 0 && embeddedNumIds.has(p.numId)) {
